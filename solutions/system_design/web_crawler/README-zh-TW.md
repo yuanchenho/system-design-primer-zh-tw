@@ -65,40 +65,34 @@
 * 每秒 40 次請求 = 每月 1 億次請求
 * 每秒 400 次請求 = 每月 10 億 次請求
 
-## Step 2: Create a high level design
+## 步驟二：進行高階設計
 
-> Outline a high level design with all important components.
+> 提出所有重要元件的高階設計
 
-![Imgur](http://i.imgur.com/xjdAAUv.png)
+### 使用情境：抓取多個 URL 的內容
 
-## Step 3: Design core components
+我們假設一開始有一個根據熱門程度排序好的列表，而我們會根據這份列表來抓取網頁內容。如果這個假設不成立，或是沒有這個列表時，可以從一些其他服務來取得，例如：[Yahoo](https://www.yahoo.com/) 或 [DMOZ](http://www.dmoz.org/) 等。
 
-> Dive into details for each core component.
+我們建立一張資料表 `crawled_links` 來儲存抓取過後的網頁連結和它們對應的頁面標記。
 
-### Use case: Service crawls a list of urls
+我們可以把要抓取的網頁連結，和已經處理過的網頁連結，分別建立兩個資料表 `links_to_crawl` 和 `crawled_links`，這兩個資料表可以儲存在鍵值對的 **NoSQL 資料庫**，例如 [Redis](https://redis.io/)，儲存時可以針對熱門程度來排序。我們也可以針對 [使用 SQL 或 NoSQL 的情況進行討論](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#sql-%E6%88%96-nosql)。
 
-We'll assume we have an initial list of `links_to_crawl` ranked initially based on overall site popularity.  If this is not a reasonable assumption, we can seed the crawler with popular sites that link to outside content such as [Yahoo](https://www.yahoo.com/), [DMOZ](http://www.dmoz.org/), etc
+* **爬蟲程式**會在一個迴圈中，針對每一個要抓取的頁面進行以下行為：
+    * 選取排序高的頁面進行抓取
+        * 在 **NoSQL 資料庫** 中檢查 `crawled_links` 資料表是否頁面有某些頁面具有相同的頁面標記
+            * 如果有類似的頁面標記，調整他們的優先順序一併抓取
+                * 這可以避免我們陷入一個迴圈中
+                * 繼續檢查
+            * 如果沒有的話，就直接抓取頁面
+                * 在 **反向索引服務** 佇列中增加一個抓取網頁的工作來產生 [反向索引](https://en.wikipedia.org/wiki/Search_engine_indexing)
+                * 增加一個工作到 **文件服務** 佇列中來產生靜態的標題和描述片段(snippet)
+                * 產生頁面標記
+                * 從 **NoSQL 資料庫** 的 `links_to_crawl` 資料表中將此連結移除
+                * 在 **NoSQL 資料庫** 中的 `crawled_links` 資料表中插入此網頁連結和網頁標記
 
-We'll use a table `crawled_links` to store processed links and their page signatures.
+**向你的面試者詢問他預期你的程式碼要寫到什麼程度**.
 
-We could store `links_to_crawl` and `crawled_links` in a key-value **NoSQL Database**.  For the ranked links in `links_to_crawl`, we could use [Redis](https://redis.io/) with sorted sets to maintain a ranking of page links.  We should discuss the [use cases and tradeoffs between choosing SQL or NoSQL](https://github.com/donnemartin/system-design-primer#sql-or-nosql).
-
-* The **Crawler Service** processes each page link by doing the following in a loop:
-    * Takes the top ranked page link to crawl
-        * Checks `crawled_links` in the **NoSQL Database** for an entry with a similar page signature
-            * If we have a similar page, reduces the priority of the page link
-                * This prevents us from getting into a cycle
-                * Continue
-            * Else, crawls the link
-                * Adds a job to the **Reverse Index Service** queue to generate a [reverse index](https://en.wikipedia.org/wiki/Search_engine_indexing)
-                * Adds a job to the **Document Service** queue to generate a static title and snippet
-                * Generates the page signature
-                * Removes the link from `links_to_crawl` in the **NoSQL Database**
-                * Inserts the page link and signature to `crawled_links` in the **NoSQL Database**
-
-**Clarify with your interviewer how much code you are expected to write**.
-
-`PagesDataStore` is an abstraction within the **Crawler Service** that uses the **NoSQL Database**:
+`PagesDataStore` 是一個在 **網頁爬蟲程式** 中抽象的類別，它用來和 **NoSQL 資料庫** 進行溝通：
 
 ```
 class PagesDataStore(object):
@@ -132,7 +126,7 @@ class PagesDataStore(object):
         ...
 ```
 
-`Page` is an abstraction within the **Crawler Service** that encapsulates a page, its contents, child urls, and signature:
+`Page` 是一個在 **網頁爬蟲程式** 中的抽象類別，用來包裝一個網頁頁面，包含了它的內容、子連結和頁面標記：
 
 ```
 class Page(object):
@@ -144,7 +138,7 @@ class Page(object):
         self.signature = signature
 ```
 
-`Crawler` is the main class within **Crawler Service**, composed of `Page` and `PagesDataStore`.
+`Crawler` 是我們 **網頁爬蟲** 的主程式，當中會用到 `Page` 和 `PagesDataStore`：
 
 ```
 class Crawler(object):
@@ -176,16 +170,16 @@ class Crawler(object):
                 self.crawl_page(page)
 ```
 
-### Handling duplicates
+### 處理重複
 
-We need to be careful the web crawler doesn't get stuck in an infinite loop, which happens when the graph contains a cycle.
+我們需要注意讓爬蟲程式不會陷入到無窮迴圈中。當你的 Graph 結構中包含迴圈的時候就會發生這種問題。
 
-**Clarify with your interviewer how much code you are expected to write**.
+**向你的面試者詢問他預期你的程式碼要寫到什麼程度**.
 
-We'll want to remove duplicate urls:
+我們希望移除重複的網址：
 
-* For smaller lists we could use something like `sort | unique`
-* With 1 billion links to crawl, we could use **MapReduce** to output only entries that have a frequency of 1
+* `sort | unique` 對於一個小的串列集合來說，可以使用 `sort | unique` 這樣的語法
+* 但你有 10 億筆連結時，可以透過 **MapReduce** 這樣的框架來處理，取出次數為 1 的網址即可：
 
 ```
 class RemoveDuplicateUrls(MRJob):
@@ -199,38 +193,38 @@ class RemoveDuplicateUrls(MRJob):
             yield key, total
 ```
 
-Detecting duplicate content is more complex.  We could generate a signature based on the contents of the page and compare those two signatures for similarity.  Some potential algorithms are [Jaccard index](https://en.wikipedia.org/wiki/Jaccard_index) and [cosine similarity](https://en.wikipedia.org/wiki/Cosine_similarity).
+要找出內容重複則是更複雜的問題。我們可以根據網頁的內容產生一些可以用計算相似程度的指標，可以參考 [Jaccard index](https://en.wikipedia.org/wiki/Jaccard_index) 和 [cosine 相似度](https://en.wikipedia.org/wiki/Cosine_similarity)。
 
-### Determining when to update the crawl results
+### 決定什麼時候要更新抓取的網頁內容
 
-Pages need to be crawled regularly to ensure freshness.  Crawl results could have a `timestamp` field that indicates the last time a page was crawled.  After a default time period, say one week, all pages should be refreshed.  Frequently updated or more popular sites could be refreshed in shorter intervals.
+我們的爬蟲程式需要經常的去更新網頁內容以保持內容是最新的。我們可以保存一個 `timestamp` 欄位來標記該頁面最後抓取的時間。設定一個期間，比如說一週，所有的頁面需要被更新。較為熱門的頁面更新的頻率可以更快一些。
 
-Although we won't dive into details on analytics, we could do some data mining to determine the mean time before a particular page is updated, and use that statistic to determine how often to re-crawl the page.
+儘管我們沒有要深入討論如何進行頁面內容的分析，但我們可以做一些簡單的資料探勘來計算特定頁面更新的平均時間，並透過統計資訊來幫助我們來決定何時要重新抓取頁面。
 
-We might also choose to support a `Robots.txt` file that gives webmasters control of crawl frequency.
+我們也可以支援 `Robots.txt` 檔案，讓網站管理者可以自行決定抓取的頻率。
 
-### Use case: User inputs a search term and sees a list of relevant pages with titles and snippets
+### 使用情境：使用者輸入搜尋關鍵詞來查看相關頁面的標題和描述片段
 
-* The **Client** sends a request to the **Web Server**, running as a [reverse proxy](https://github.com/donnemartin/system-design-primer#reverse-proxy-web-server)
-* The **Web Server** forwards the request to the **Query API** server
-* The **Query API** server does the following:
-    * Parses the query
-        * Removes markup
-        * Breaks up the text into terms
-        * Fixes typos
-        * Normalizes capitalization
-        * Converts the query to use boolean operations
-    * Uses the **Reverse Index Service** to find documents matching the query
-        * The **Reverse Index Service** ranks the matching results and returns the top ones
-    * Uses the **Document Service** to return titles and snippets
+* 使用者發送請求到以 [反向代理](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E5%8F%8D%E5%90%91%E4%BB%A3%E7%90%86%E7%B6%B2%E9%A0%81%E4%BC%BA%E6%9C%8D%E5%99%A8) 形式運作的 **網頁伺服器**
+* **網頁伺服器** 轉送請求到 **查詢 API 伺服器**
+* **查詢 API 伺服器** 會進行以下行為：
+    * 解析查詢語句
+        * 刪除標記
+        * 將查詢語句文字轉換為詞
+        * 修正錯字
+        * 將大小寫正規化
+        * 將查詢轉換為布林操作
+    * 使用 **反向索引服務** 來尋找匹配查詢詞的網頁內容
+        * **反向索引服務** 會針對匹配的結果進行排序，並回傳排名第一的結果
+    * 使用 **文件服務** 來回傳標題和描述片段
 
-We'll use a public [**REST API**](https://github.com/donnemartin/system-design-primer#representational-state-transfer-rest):
+我們可以使用公開的 [**REST API**](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E5%85%B7%E8%B1%A1%E7%8B%80%E6%85%8B%E8%BD%89%E7%A7%BB-rest)：
 
 ```
 $ curl https://search.com/api/v1/search?query=hello+world
 ```
 
-Response:
+回應：
 
 ```
 {
@@ -250,104 +244,104 @@ Response:
 },
 ```
 
-For internal communications, we could use [Remote Procedure Calls](https://github.com/donnemartin/system-design-primer#remote-procedure-call-rpc).
+針對內部通訊，我們可以使用 [遠端程式呼叫](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E9%81%A0%E7%AB%AF%E7%A8%8B%E5%BC%8F%E5%91%BC%E5%8F%AB-rpc)。
 
-## Step 4: Scale the design
+## 步驟四：擴展你的設計
 
-> Identify and address bottlenecks, given the constraints.
+> 根據你設定的限制條件，提出目前設計架構上的瓶頸，並提出解決方法
 
 ![Imgur](http://i.imgur.com/bWxPtQA.png)
 
-**Important: Do not simply jump right into the final design from the initial design!**
+**重要提醒：不要一開始就從最初的設計跳到最後階段**
 
-State you would 1) **Benchmark/Load Test**, 2) **Profile** for bottlenecks 3) address bottlenecks while evaluating alternatives and trade-offs, and 4) repeat.  See [Design a system that scales to millions of users on AWS](../scaling_aws/README.md) as a sample on how to iteratively scale the initial design.
+描述你如何進行 1) **負載壓力測試**、2) **描述瓶頸**、3) 解決瓶頸，並提出替代方案、4) 重複以上步驟。可以參考 [在 AWS 上設計可以乘載百萬使用者的系統](../scaling_aws/README.md) 章節作為參考，學習如何一步一步來擴展你的初始架構設計。
 
-It's important to discuss what bottlenecks you might encounter with the initial design and how you might address each of them.  For example, what issues are addressed by adding a **Load Balancer** with multiple **Web Servers**?  **CDN**?  **Master-Slave Replicas**?  What are the alternatives and **Trade-Offs** for each?
+針對初始設計所會遇到的瓶頸進行討論，並且知道如何解決是很重要的。舉例來說，你可以透過增加一台**負載平衡器**來加入多個**網頁伺服器**來解決什麼問題？**CDN**呢？**主-從架構**？每個選擇的替代方案和權衡條件是什麼？
 
-We'll introduce some components to complete the design and to address scalability issues.  Internal load balancers are not shown to reduce clutter.
+我們會介紹一些元件來使系統設計更完整，並且解決擴展性的問題。這裡沒有顯示內部負載平衡器，以免讓整個架構太混亂。
 
-*To avoid repeating discussions*, refer to the following [system design topics](https://github.com/donnemartin/system-design-primer#index-of-system-design-topics) for main talking points, tradeoffs, and alternatives:
+*為了避免重複贅述*，請參考 [系統設計主題索引](https://github.com/donnemartin/system-design-primer#index-of-system-design-topics) 中提到的各種架構的取捨與選擇：
 
-* [DNS](https://github.com/donnemartin/system-design-primer#domain-name-system)
-* [Load balancer](https://github.com/donnemartin/system-design-primer#load-balancer)
-* [Horizontal scaling](https://github.com/donnemartin/system-design-primer#horizontal-scaling)
-* [Web server (reverse proxy)](https://github.com/donnemartin/system-design-primer#reverse-proxy-web-server)
-* [API server (application layer)](https://github.com/donnemartin/system-design-primer#application-layer)
-* [Cache](https://github.com/donnemartin/system-design-primer#cache)
-* [NoSQL](https://github.com/donnemartin/system-design-primer#nosql)
-* [Consistency patterns](https://github.com/donnemartin/system-design-primer#consistency-patterns)
-* [Availability patterns](https://github.com/donnemartin/system-design-primer#availability-patterns)
+* [域名系統](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E5%9F%9F%E5%90%8D%E7%B3%BB%E7%B5%B1)
+* [負載平衡器](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E8%B2%A0%E8%BC%89%E5%B9%B3%E8%A1%A1%E5%99%A8)
+* [水平擴展](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E6%B0%B4%E5%B9%B3%E6%93%B4%E5%B1%95)
+* [網頁伺服器 (反向代理)](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E5%8F%8D%E5%90%91%E4%BB%A3%E7%90%86%E7%B6%B2%E9%A0%81%E4%BC%BA%E6%9C%8D%E5%99%A8)
+* [API 伺服器 (應用層)](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E6%87%89%E7%94%A8%E5%B1%A4)
+* [快取](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E5%BF%AB%E5%8F%96)
+* [NoSQL](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#nosql)
+* [一致性模式](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E4%B8%80%E8%87%B4%E6%80%A7%E6%A8%A1%E5%BC%8F)
+* [可用性模式](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E5%8F%AF%E7%94%A8%E6%80%A7%E6%A8%A1%E5%BC%8F)
 
-Some searches are very popular, while others are only executed once.  Popular queries can be served from a **Memory Cache** such as Redis or Memcached to reduce response times and to avoid overloading the **Reverse Index Service** and **Document Service**.  The **Memory Cache** is also useful for handling the unevenly distributed traffic and traffic spikes.  Reading 1 MB sequentially from memory takes about 250 microseconds, while reading from SSD takes 4x and from disk takes 80x longer.<sup><a href=https://github.com/donnemartin/system-design-primer#latency-numbers-every-programmer-should-know>1</a></sup>
+某些搜尋很熱門，但其他的可能只有被搜尋過寥寥數次而已。針對熱門的搜尋可以透過 **記憶體快取**，像是 Redis 或 Memcached 來降低回應時間及降低 **反向索引服務** 和 **文件服務** 的負擔。**記憶體快取** 對於處理非均勻流量和突發的流量也很有幫助。從記憶體中循序讀取 1 MB 的資料大約需要花費 250 微秒，然而，從 SSD 中讀取則需要花 4 倍以上的時間，而從硬碟中讀取則要花費 80 倍以上的時間<sup><a href=https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E6%AF%8F%E5%80%8B%E9%96%8B%E7%99%BC%E8%80%85%E9%83%BD%E6%87%89%E8%A9%B2%E7%9F%A5%E9%81%93%E7%9A%84%E5%BB%B6%E9%81%B2%E6%95%B8%E9%87%8F%E7%B4%9A>1</a></sup>
 
-Below are a few other optimizations to the **Crawling Service**:
+針對 **網頁爬蟲程式**，底下還有一些優化的建議：
 
-* To handle the data size and request load, the **Reverse Index Service** and **Document Service** will likely need to make heavy use sharding and replication.
-* DNS lookup can be a bottleneck, the **Crawler Service** can keep its own DNS lookup that is refreshed periodically
-* The **Crawler Service** can improve performance and reduce memory usage by keeping many open connections at a time, referred to as [connection pooling](https://en.wikipedia.org/wiki/Connection_pool)
-    * Switching to [UDP](https://github.com/donnemartin/system-design-primer#user-datagram-protocol-udp) could also boost performance
-* Web crawling is bandwidth intensive, ensure there is enough bandwidth to sustain high throughput
+* 為了處理可預見的資料量和請求，**反向索引服務** 和 **文件服務** 可以採用分片或複寫的機制
+* DNS 查詢可能會是瓶頸，**爬蟲程式** 可以使用自己的 DNS 查詢方法來讓更新更頻繁一點
+* **爬蟲程式** 可以藉由在一段時間內保持連線開啟來增加效能並減少記憶體使用量，可以參考 [連線池](https://en.wikipedia.org/wiki/Connection_pool) 的說明
+    * 使用 [UDP](https://github.com/donnemartin/system-design-primer#user-datagram-protocol-udp) 協定一樣可以增加效能
+* 網路爬蟲需要有足夠的頻寬，確保你的頻寬足以讓你維持較高的處理能力
 
-## Additional talking points
+## 其他的重點
 
-> Additional topics to dive into, depending on the problem scope and time remaining.
+> 根據問題的範圍和剩餘的時間來深入探討其他主題
 
-### SQL scaling patterns
+### SQL 擴展模式
 
-* [Read replicas](https://github.com/donnemartin/system-design-primer#master-slave-replication)
-* [Federation](https://github.com/donnemartin/system-design-primer#federation)
-* [Sharding](https://github.com/donnemartin/system-design-primer#sharding)
-* [Denormalization](https://github.com/donnemartin/system-design-primer#denormalization)
-* [SQL Tuning](https://github.com/donnemartin/system-design-primer#sql-tuning)
+* [可讀副本](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E4%B8%BB%E5%BE%9E%E8%A4%87%E5%AF%AB)
+* [聯邦式資料庫](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E8%81%AF%E9%82%A6%E5%BC%8F%E8%B3%87%E6%96%99%E5%BA%AB)
+* [分片](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E5%88%86%E7%89%87)
+* [反正規化](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E5%8F%8D%E6%AD%A3%E8%A6%8F%E5%8C%96)
+* [SQL 優化](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#sql-%E5%84%AA%E5%8C%96)
 
 #### NoSQL
 
-* [Key-value store](https://github.com/donnemartin/system-design-primer#key-value-store)
-* [Document store](https://github.com/donnemartin/system-design-primer#document-store)
-* [Wide column store](https://github.com/donnemartin/system-design-primer#wide-column-store)
-* [Graph database](https://github.com/donnemartin/system-design-primer#graph-database)
-* [SQL vs NoSQL](https://github.com/donnemartin/system-design-primer#sql-or-nosql)
+* [鍵-值對的資料庫](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E9%8D%B5-%E5%80%BC%E5%B0%8D%E7%9A%84%E8%B3%87%E6%96%99%E5%BA%AB)
+* [文件類型資料庫](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E6%96%87%E4%BB%B6%E9%A1%9E%E5%9E%8B%E8%B3%87%E6%96%99%E5%BA%AB)
+* [列儲存型資料庫](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E5%88%97%E5%84%B2%E5%AD%98%E5%9E%8B%E8%B3%87%E6%96%99%E5%BA%AB)
+* [圖形資料庫](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E5%9C%96%E5%BD%A2%E8%B3%87%E6%96%99%E5%BA%AB)
+* [SQL 或 NoSQL](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#sql-%E6%88%96-nosql)
 
-### Caching
+### 快取
 
-* Where to cache
-    * [Client caching](https://github.com/donnemartin/system-design-primer#client-caching)
-    * [CDN caching](https://github.com/donnemartin/system-design-primer#cdn-caching)
-    * [Web server caching](https://github.com/donnemartin/system-design-primer#web-server-caching)
-    * [Database caching](https://github.com/donnemartin/system-design-primer#database-caching)
-    * [Application caching](https://github.com/donnemartin/system-design-primer#application-caching)
-* What to cache
-    * [Caching at the database query level](https://github.com/donnemartin/system-design-primer#caching-at-the-database-query-level)
-    * [Caching at the object level](https://github.com/donnemartin/system-design-primer#caching-at-the-object-level)
-* When to update the cache
-    * [Cache-aside](https://github.com/donnemartin/system-design-primer#cache-aside)
-    * [Write-through](https://github.com/donnemartin/system-design-primer#write-through)
-    * [Write-behind (write-back)](https://github.com/donnemartin/system-design-primer#write-behind-write-back)
-    * [Refresh ahead](https://github.com/donnemartin/system-design-primer#refresh-ahead)
+* 在哪裡進行快取
+    * [使用者端快取](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E5%AE%A2%E6%88%B6%E7%AB%AF%E5%BF%AB%E5%8F%96)
+    * [CDN 快取](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#cdn-%E5%BF%AB%E5%8F%96)
+    * [網站伺服器快取](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E7%B6%B2%E7%AB%99%E4%BC%BA%E6%9C%8D%E5%99%A8%E5%BF%AB%E5%8F%96)
+    * [資料庫快取](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E8%B3%87%E6%96%99%E5%BA%AB%E5%BF%AB%E5%8F%96)
+    * [應用程式快取](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E6%87%89%E7%94%A8%E7%A8%8B%E5%BC%8F%E5%BF%AB%E5%8F%96)
+* 什麼資訊需要快取
+    * [資料庫查詢級別的快取](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E8%B3%87%E6%96%99%E5%BA%AB%E6%9F%A5%E8%A9%A2%E7%B4%9A%E5%88%A5%E7%9A%84%E5%BF%AB%E5%8F%96)
+    * [物件級別的快取](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E7%89%A9%E4%BB%B6%E7%B4%9A%E5%88%A5%E7%9A%84%E5%BF%AB%E5%8F%96)
+* 什麼時候要更新快取
+    * [快取模式](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E5%BF%AB%E5%8F%96%E6%A8%A1%E5%BC%8F)
+    * [寫入模式](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E5%AF%AB%E5%85%A5%E6%A8%A1%E5%BC%8F)
+    * [事後寫入(回寫)](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E4%BA%8B%E5%BE%8C%E5%AF%AB%E5%85%A5%E5%9B%9E%E5%AF%AB)
+    * [更新式快取](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E6%9B%B4%E6%96%B0%E5%BC%8F%E5%BF%AB%E5%8F%96)
 
-### Asynchronism and microservices
+### 非同步機制與微服務
 
-* [Message queues](https://github.com/donnemartin/system-design-primer#message-queues)
-* [Task queues](https://github.com/donnemartin/system-design-primer#task-queues)
-* [Back pressure](https://github.com/donnemartin/system-design-primer#back-pressure)
-* [Microservices](https://github.com/donnemartin/system-design-primer#microservices)
+* [訊息佇列](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E8%A8%8A%E6%81%AF%E4%BD%87%E5%88%97)
+* [工作佇列](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E5%B7%A5%E4%BD%9C%E4%BD%87%E5%88%97)
+* [被壓機制](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E8%83%8C%E5%A3%93%E6%A9%9F%E5%88%B6)
+* [微服務](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E5%BE%AE%E6%9C%8D%E5%8B%99)
 
-### Communications
+### 通訊
 
-* Discuss tradeoffs:
-    * External communication with clients - [HTTP APIs following REST](https://github.com/donnemartin/system-design-primer#representational-state-transfer-rest)
-    * Internal communications - [RPC](https://github.com/donnemartin/system-design-primer#remote-procedure-call-rpc)
-* [Service discovery](https://github.com/donnemartin/system-design-primer#service-discovery)
+* 討論以下的選擇：
+    * 和客戶端進行外部通訊 - [使用 REST 的 HTTP APIs](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E5%85%B7%E8%B1%A1%E7%8B%80%E6%85%8B%E8%BD%89%E7%A7%BB-rest)
+    * 內部通訊 - [RPC](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E9%81%A0%E7%AB%AF%E7%A8%8B%E5%BC%8F%E5%91%BC%E5%8F%AB-rpc)
+* [服務發現](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E6%9C%8D%E5%8B%99%E7%99%BC%E7%8F%BE)
 
-### Security
+### 資訊安全
 
-Refer to the [security section](https://github.com/donnemartin/system-design-primer#security).
+參考 [資訊安全](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E8%B3%87%E8%A8%8A%E5%AE%89%E5%85%A8) 章節。
 
-### Latency numbers
+### 延遲數
 
-See [Latency numbers every programmer should know](https://github.com/donnemartin/system-design-primer#latency-numbers-every-programmer-should-know).
+參考 [每個開發者都應該知道的延遲數量級](https://github.com/kevingo/system-design-primer-zh-tw/blob/master/README-zh-TW.md#%E6%AF%8F%E5%80%8B%E9%96%8B%E7%99%BC%E8%80%85%E9%83%BD%E6%87%89%E8%A9%B2%E7%9F%A5%E9%81%93%E7%9A%84%E5%BB%B6%E9%81%B2%E6%95%B8%E9%87%8F%E7%B4%9A) 章節。
 
-### Ongoing
+### 後續步驟
 
-* Continue benchmarking and monitoring your system to address bottlenecks as they come up
-* Scaling is an iterative process
+* 持續監控系統，並進行壓力測試來解決隨時出現的系統瓶頸。
+* 擴展是一個持續迭代的過程
